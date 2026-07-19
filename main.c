@@ -198,6 +198,8 @@ int main(int argc, char **argv)
     struct Text text = parse_args(argc, argv);
     
     run_test(text);
+
+    free(text.str);
     
     return 0;
 }
