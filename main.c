@@ -166,14 +166,14 @@ void run_test(struct Text text)
 
 struct Text parse_args(int argc, char **argv)
 {
-    struct Text text = text_create(argv[1], 0);
-
     if (!argv[1])
     {
         printf("Pass string that you want to type");
+        struct Text text = {};
         return text;
     }
-
+    
+    struct Text text = text_create(argv[1], 0);
     text_append(&text, ' ');
     for (int i = 2; i < argc; i++)
     {
