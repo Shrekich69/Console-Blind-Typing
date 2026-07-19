@@ -119,11 +119,15 @@ void run_test(struct Text text)
             {
                 break;
             }
-            else if (c == 127 && ind > 0) // 127 is Del
+            else if (c == 127 && ind >= 0) // 127 is Delete
             {
                 deleteSteps++;
                 ind--;
                 column--;
+                if (corn[ind] == TypedCorrect)
+                    corrects--;
+                else if (corn[ind] == TypedMistake)
+                    mistakes--;
                 corn[ind] = 0;
             }
             else if (c != '\n' && ind < text.length)
@@ -135,8 +139,6 @@ void run_test(struct Text text)
                     {
                         deleteSteps--;
                         corrections++;
-                        if (mistakes > 0)
-                            mistakes--;
                     }
                     else
                     {
