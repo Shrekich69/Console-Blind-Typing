@@ -119,7 +119,7 @@ void run_test(struct Text text)
             {
                 break;
             }
-            else if (c == 127 && ind >= 0) // 127 is Del
+            else if (c == 127 && ind > 0) // 127 is Del
             {
                 deleteSteps++;
                 ind--;
@@ -134,8 +134,9 @@ void run_test(struct Text text)
                     if (deleteSteps > 0)
                     {
                         deleteSteps--;
-                        mistakes--;
                         corrections++;
+                        if (mistakes > 0)
+                            mistakes--;
                     }
                     else
                     {
