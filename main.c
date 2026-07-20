@@ -1,10 +1,12 @@
-#include <stddef.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
+
 #include <termios.h>
 #include <unistd.h>
+#include <time.h>
 
 void reset_terminal_mode(struct termios *orig_term)
 {
@@ -45,7 +47,7 @@ struct Text text_create(char *str, size_t capacity)
         capacity = text.length * 2;
     text.capacity = capacity;
 
-    text.str = malloc(sizeof(char) * (text.capacity + 1));
+    text.str = calloc(text.capacity + 1, sizeof(char));
     if (!text.str)
     {
         fprintf(stderr, "Allocation error");
@@ -86,7 +88,7 @@ void text_insert(struct Text *text, char c, size_t i)
 
 void run_test(struct Text text)
 {
-    int corn[text.length];
+    int *corn = calloc(text.length, sizeof(int));
     int corrects    = 0;
     // corrected mistakes
     int corrections = 0;
@@ -97,16 +99,18 @@ void run_test(struct Text text)
     char c;
     int ind = 0;
     int column = 1;
-    
+
     struct termios orig_termios;
     set_terminal_mode(&orig_termios);
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    clock_t start = clock();
+
     while (1)
     {
         printf("\033c");
-        printf("Type\n");
-        for (unsigned int i = 0; i < text.length; i++)
+        printf("\033[1m\033[4mType.\033[m\n");
+        for (int i = 0; i < text.length; i++)
         {
             printf("\033[%im%c\033[m", corn[i], text.str[i]);
         }
@@ -128,7 +132,7 @@ void run_test(struct Text text)
                     corrects--;
                 else if (corn[ind] == TypedMistake)
                     mistakes--;
-                corn[ind] = 0;
+                corn[ind] = NotTypedYet;
             }
             else if (c != '\n' && ind < text.length)
             {
@@ -154,18 +158,23 @@ void run_test(struct Text text)
                 ind++;
                 column++;
             }
-            else if (c == '\n' && ind == text.length)
+            // if user reached the end of sentence
+            else if ((c == '\n' || c == ' ') && ind == text.length)
             {
-                printf("\nResult:\n%i correct, %i corrections, %i mistakes", corrects, corrections, mistakes);
+                printf("\n\033[1m\033[4mResults:\033[m\n\033[32m%i correct\033[m, \033[33m%i corrections\033[m, \033[31m%i mistakes\033[m", corrects, corrections, mistakes);
+
+                clock_t end = clock();
+                double time_ms = (double)(end - start) * 1000 / CLOCKS_PER_SEC;
+                printf("Time passed: \033[2m%.2f secs\033[m\nCPS(Chars per sec): \033[2m%.2f\033[m\n", time_ms, (double)text.length / time_ms);
+
                 break;
             }
         }
     }
-    printf("\n");
-
+    
+    free(corn);
     reset_terminal_mode(&orig_termios);
 }
-
 
 struct Text parse_args(int argc, char **argv)
 {
@@ -175,8 +184,8 @@ struct Text parse_args(int argc, char **argv)
         struct Text text = {};
         return text;
     }
-    
-    struct Text text = text_create(argv[1], 0);
+
+    struct Text text = text_create(argv[1], 100);
     text_append(&text, ' ');
     for (int i = 2; i < argc; i++)
     {
@@ -196,10 +205,10 @@ struct Text parse_args(int argc, char **argv)
 int main(int argc, char **argv)
 {
     struct Text text = parse_args(argc, argv);
-    
+
     run_test(text);
 
     free(text.str);
-    
+
     return 0;
 }
