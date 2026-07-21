@@ -334,10 +334,10 @@ char **get_quotes(int *quotesInTotal, char *pathToBin)
     // read quotes
     fscanf(f, "%i", quotesInTotal);
     char **quotesf = calloc(*quotesInTotal - 1, sizeof(char *));
-    size_t quoteLen;
+    size_t quoteCapp;
     for (int i = 0; i < *quotesInTotal; i++)
     {
-        getline(&quotesf[i], &quoteLen, f);
+        getdelim(&quotesf[i], &quoteCapp, '\0', f);
     }
     fclose(f);
 
