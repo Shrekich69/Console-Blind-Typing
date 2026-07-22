@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stddef.h>
@@ -8,6 +9,16 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <time.h>
+
+#define RELEASE
+
+#ifdef DEBUG
+static size_t malloced = 0;
+#endif // DEBUG
+
+/* 
+    Terminal mode
+*/
 
 void reset_terminal_mode(struct termios *orig_term)
 {
@@ -24,13 +35,9 @@ void set_terminal_mode(struct termios *orig_term)
     tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 }
 
-// Enum of char types
-enum TypeOfTyped
-{
-    NotTypedYet  = 0,    // If user didn't reach letter yet
-    TypedCorrect = 32,   // If user typed letter right
-    TypedMistake = 31    // If user did a mistake
-};
+/* 
+    Text
+*/
 
 struct Text
 {
@@ -49,6 +56,9 @@ struct Text text_create(char *str, size_t capacity)
     text.capacity = capacity;
 
     text.str = calloc(text.capacity + 1, sizeof(char));
+#ifdef DEBUG
+    malloced += (text.capacity + 1) * sizeof(char);
+#endif // DEBUG
     if (!text.str)
     {
         fprintf(stderr, "Allocation error");
@@ -76,7 +86,10 @@ int text_append(struct Text *text, char c)
     if (text->length >= text->capacity)
     {
         text->capacity *= 2;
-        text->str = realloc(text->str, text->capacity);
+        text->str = realloc(text->str, text->capacity * sizeof(char));
+#ifdef DEBUG
+        malloced += text->capacity * sizeof(char);
+#endif // DEBUG
         if (!text->str)
         {
             fprintf(stderr, "Allocation error");
@@ -96,22 +109,59 @@ void text_insert(struct Text *text, char c, size_t i)
     text->length--;
 }
 
+/* 
+    run_test
+*/
+
+// keycodes
+#define ESC   27
+#define DEL   127
+#define CR    10
+#define SPACE 32
+
+/* 
+    ANSI Escape Codes
+*/
+#define ESC_CODE    "\033["
+#define CANCEL_CODE "\033[m" // Cancels previous codes
+#define CLR_CODE    "\033c"
+// Modificators
+#define BOLD       ESC_CODE "1m"
+#define UNDERSCORE ESC_CODE "4m"
+// Text colors
+#define RED    ESC_CODE "31m"
+#define GREEN  ESC_CODE "32m"
+#define YELLOW ESC_CODE "33m"
+#define GREY   ESC_CODE "2m"
+
+// Enum of char types
+enum TypeOfTyped
+{
+    NotTypedYet  = 0,    // If user didn't reach letter yet
+    TypedCorrect = 32,   // If user typed letter right
+    TypedMistake = 31    // If user did a mistake
+};
+
 void run_test(struct Text text)
 {
     // Results
-    int *corn = calloc(text.length, sizeof(int));
+    int *corn = calloc(text.length, sizeof(int)); // correct or not
+#ifdef DEBUG
+    malloced += text.length * sizeof(int);
+#endif // DEBUG
     int correct    = 0;
     // corrected mistakes
     int corrections = 0;
     int mistakes    = 0;
-
+    
     int deletions = 0;
 
     char c;
-    int ind = 0;
-    int column = 1;
-    int line = 2;
-    int max_column;
+    size_t ind = 0;
+    uint16_t column = 1;
+    uint16_t line = 2;
+
+    uint16_t max_column;
     {
         struct winsize ws;
         if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0)
@@ -139,25 +189,25 @@ void run_test(struct Text text)
 
     while (1)
     {
-        printf("\033c");
-        printf("\033[1m\033[4mType.\033[m\n");
+        printf(CLR_CODE);
+        printf(BOLD UNDERSCORE "Type." CANCEL_CODE "\n");
         for (int i = 0; i < text.length; i++)
         {
-            printf("\033[%im%c\033[m", corn[i], text.str[i]);
+            printf(ESC_CODE "%im%c" CANCEL_CODE, corn[i], text.str[i]);
         }
-        printf("\033[%i;%iH", line, column);
+        printf(ESC_CODE "%i;%iH", line, column);
 
         // get typed char
         if (read(STDIN_FILENO, &c, 1) == 1)
         {
-            if (c == '\033')
+            if (c == ESC)
             {
                 break;
             }
-            else if (c == 127 && ind >= 0) // 127 is Delete
+            else if (c == DEL && ind > 0)
             {
-                deletions++;
                 ind--;
+
                 if (column <= 1)
                 {
                     column = max_column;
@@ -167,13 +217,19 @@ void run_test(struct Text text)
                 {
                     column--;
                 }
-                if (corn[ind] == TypedCorrect)
+
+                if (corn[ind] == TypedCorrect && correct != 0)
+                {
                     correct--;
-                else if (corn[ind] == TypedMistake)
+                }
+                else if (corn[ind] == TypedMistake && mistakes != 0)
+                {
                     mistakes--;
+                    deletions++;
+                }
                 corn[ind] = NotTypedYet;
             }
-            else if (c != '\n' && ind < text.length)
+            else if (c != CR && c != DEL && ind < text.length)
             {
                 if (c == text.str[ind])
                 {
@@ -204,9 +260,10 @@ void run_test(struct Text text)
                     column++;
             }
             // if user reached the end of sentence
-            else if ((c == '\n' || c == ' ') && ind == text.length)
+            else if ((c == CR || c == SPACE) && ind == text.length)
             {
-                printf("\n\033[1m\033[4mResults:\033[m\n\033[32m%i correct\033[m, \033[33m%i corrections\033[m, \033[31m%i mistakes\033[m\n", correct, corrections, mistakes);
+                printf("\n" BOLD UNDERSCORE "Results:" CANCEL_CODE "\n" GREEN "%i correct" CANCEL_CODE ", " YELLOW "%i corrections" CANCEL_CODE
+                    ", " RED "%i mistakes" CANCEL_CODE "\n", correct, corrections, mistakes);
 
                 if (clock_gettime(CLOCK_MONOTONIC, &end) == -1)
                 {
@@ -214,7 +271,7 @@ void run_test(struct Text text)
                     return;
                 }
                 double timePassed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9;
-                printf("Time passed: \033[2m%.3f secs\033[m\nCPM(Chars per min): \033[2m%i cpm\033[m\n", timePassed, (int)(text.length / (timePassed / 60)));
+                printf("Time passed: " GREY "%.3f secs" CANCEL_CODE "\nCPM(Chars per min): " GREY "%i cpm" CANCEL_CODE "\n", timePassed, (int)(text.length / (timePassed / 60)));
 
                 break;
             }
@@ -225,33 +282,7 @@ void run_test(struct Text text)
     reset_terminal_mode(&orig_termios);
 }
 
-struct Text parse_args(int argc, char **argv)
-{
-    if (!argv[1])
-    {
-        printf("Pass string that you want to type");
-        struct Text text = {};
-        return text;
-    }
-
-    struct Text text = text_create(argv[1], 100);
-    text_append(&text, ' ');
-    for (int i = 2; i < argc; i++)
-    {
-        for (int j = 0; ; j++)
-        {
-            if (argv[i][j] == '\0')
-                break;
-            text_append(&text, argv[i][j]);
-        }
-        text_append(&text, ' ');
-    }
-    text_insert(&text, ' ', text.length - 1);
-
-    return text;
-}
-
-int py_find_quotes(char *working_dir)
+int py_find_quotes(char *currDir)
 {
     char **args = calloc(3, sizeof(char *));
     if (!args)
@@ -261,7 +292,10 @@ int py_find_quotes(char *working_dir)
     }
 
     args[0] = malloc((strlen("python3") + 1) * sizeof(char));
-    args[1] = malloc((strlen(working_dir) + strlen("find_quotes.py") + 1) * sizeof(char));
+    args[1] = malloc((strlen(currDir) + strlen("find_quotes.py") + 1) * sizeof(char));
+#ifdef DEBUG
+    malloced += ((strlen("python3") + 1) * sizeof(char)) + ((strlen(currDir) + strlen("find_quotes.py") + 1) * sizeof(char));
+#endif // DEBUG
     if (!args[0] || !args[1])
     {
         fprintf(stderr, "Allocation error\n");
@@ -273,7 +307,7 @@ int py_find_quotes(char *working_dir)
     args[2] = NULL;
 
     strcpy(args[0], "python3");
-    strcpy(args[1], working_dir);
+    strcpy(args[1], currDir);
     strcat(args[1], "find_quotes.py");
 
     pid_t pid;
@@ -310,44 +344,92 @@ int py_find_quotes(char *working_dir)
     return 1;
 }
 
-char **get_quotes(int *quotesInTotal, char *pathToBin)
+char *path(char *binPath, char *_Nullable fileName)
+{
+    {
+        int i = strlen(binPath) - 1;
+        while (i >= 0)
+        {
+            if (binPath[i] == '/')
+            {
+                binPath[i + 1] = '\0';
+                break;
+            }
+            i--;
+        }
+    }
+    
+    char *path;
+    if (fileName)
+        path = calloc(strlen(binPath) + strlen(fileName) + 1, sizeof(char));
+    else
+        path = calloc(strlen(binPath) + 1, sizeof(char));
+
+#ifdef DEBUG
+    malloced += (strlen(binPath) + 1) * sizeof(char);
+#endif // DEBUG
+
+    if (!path)
+    {
+        fprintf(stderr, "Allocation error\n");
+        return NULL;
+    }
+    strcpy(path, binPath);
+    
+    if (fileName)
+    {
+        strcat(path, fileName);
+    }
+    
+    return path;
+}
+
+char **get_quotes(char *binPath, int *_Nullable a_quotesInTotal)
 {
     // get quotes
-    char *working_dir = malloc(sizeof(char) * (strlen(pathToBin) + strlen("quotes.txt") + 1));
-    strlcpy(working_dir, pathToBin, strlen(pathToBin) - 2);
-    if (!py_find_quotes(working_dir))
+    char *currPath = path(binPath, NULL);
+    if (!py_find_quotes(currPath))
     {
         fprintf(stderr, "Error while executing python script\n");
     }
+    free(currPath);
 
-    char file_path[strlen(working_dir)];
-    strcpy(file_path, working_dir);
-    strcat(file_path, "quotes.txt");
-    FILE *f = fopen(file_path, "r");
+    char *filePath = path(binPath, "quotes.txt");
+    FILE *f = fopen(filePath, "r");
+    free(filePath);
     if (!f)
     {
         fprintf(stderr, "Failed opening file\n");
-        free(working_dir);
         return NULL;
     }
 
     // read quotes
-    fscanf(f, "%i", quotesInTotal);
-    char **quotesf = calloc(*quotesInTotal - 1, sizeof(char *));
+    int quotesInTotal;
+    fscanf(f, "%i", &quotesInTotal);
+    if (a_quotesInTotal)
+        *a_quotesInTotal = quotesInTotal;
+
+    char **quotesf = calloc(quotesInTotal, sizeof(char *));
+#ifdef DEBUG
+    malloced += quotesInTotal * sizeof(char *);
+#endif // DEBUG
+    quotesf[quotesInTotal - 1] = NULL;
     size_t quoteCapp;
-    for (int i = 0; i < *quotesInTotal; i++)
+    for (int i = 0; i < quotesInTotal - 1; i++)
     {
         getdelim(&quotesf[i], &quoteCapp, '\0', f);
+#ifdef DEBUG
+        malloced += quoteCapp * sizeof(char);
+#endif // DEBUG
     }
     fclose(f);
 
-    free(working_dir);
     return quotesf;
 }
 
-void quotes_free(char **quotes, int quotesInTotal)
+void quotes_free(char **quotes)
 {
-    for (int i = 0; i < quotesInTotal; i++)
+    for (int i = 0; quotes[i] != NULL; i++)
     {
         free(quotes[i]);
     }
@@ -357,7 +439,7 @@ void quotes_free(char **quotes, int quotesInTotal)
 int main(int argc, char **argv)
 {
     int quotesInTotal;
-    char **quotes = get_quotes(&quotesInTotal, argv[0]);
+    char **quotes = get_quotes(argv[0], &quotesInTotal);
     if (!quotes)
     {
         return 1;
@@ -365,11 +447,15 @@ int main(int argc, char **argv)
 
     // pick a random quote
     srand(time(NULL));
-    int random_quote = rand() % quotesInTotal;
+    int random_quote = rand() % (quotesInTotal - 2);
     struct Text text = text_create_ncp(quotes[random_quote]);
     run_test(text);
+
+#ifdef DEBUG
+    printf("Malloced: %lu", malloced);
+#endif // DEBUG
     
     // cleaning
-    quotes_free(quotes, quotesInTotal);
+    quotes_free(quotes);
     return 0;
 }
