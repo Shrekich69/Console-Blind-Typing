@@ -10,12 +10,6 @@
 #include <unistd.h>
 #include <time.h>
 
-#define RELEASE
-
-#ifdef DEBUG
-static size_t malloced = 0;
-#endif // DEBUG
-
 /* 
     Terminal mode
 */
@@ -36,81 +30,34 @@ void set_terminal_mode(struct termios *orig_term)
 }
 
 /* 
-    Text
+    Timer
 */
 
-struct Text
+static struct timespec time_start, time_end;
+
+void timer_start()
 {
-    char  *str;
-    size_t length;
-    size_t capacity;
-};
-
-struct Text text_create(char *str, size_t capacity)
-{
-    struct Text text;
-
-    text.length = strlen(str);
-    if (capacity < text.length)
-        capacity = text.length * 2;
-    text.capacity = capacity;
-
-    text.str = calloc(text.capacity + 1, sizeof(char));
-#ifdef DEBUG
-    malloced += (text.capacity + 1) * sizeof(char);
-#endif // DEBUG
-    if (!text.str)
+    if (clock_gettime(CLOCK_MONOTONIC, &time_start) == -1)
     {
-        fprintf(stderr, "Allocation error");
-        return text;
+        perror("clock_gettime");
+        return;
     }
-    strcpy(text.str, str);
-    text.str[text.length] = '\0';
-    return text;
 }
 
-// just a wrap for an existing pointer ("ncp" means "no copy")
-struct Text text_create_ncp(char *str)
+double timer_stop()
 {
-    struct Text text;
-
-    text.str = str;
-    text.length = strlen(str);
-    text.capacity = text.length * 2;
-
-    return text;
-}
-
-int text_append(struct Text *text, char c)
-{
-    if (text->length >= text->capacity)
+    if (clock_gettime(CLOCK_MONOTONIC, &time_end) == -1)
     {
-        text->capacity *= 2;
-        text->str = realloc(text->str, text->capacity * sizeof(char));
-#ifdef DEBUG
-        malloced += text->capacity * sizeof(char);
-#endif // DEBUG
-        if (!text->str)
-        {
-            fprintf(stderr, "Allocation error");
-            return 0;
-        }
+        perror("clock_gettime");
+        return -1;
     }
-    text->length++;
-    text->str[text->length - 1] = c;
-    text->str[text->length] = '\0';
+    double timePassed = (time_end.tv_sec - time_start.tv_sec) + (time_end.tv_nsec - time_start.tv_nsec) * 1e-9;
 
-    return 1;
-}
-
-void text_insert(struct Text *text, char c, size_t i)
-{
-    text->str[i] = c;
-    text->length--;
+    return timePassed;
 }
 
 /* 
-    run_test
+    Text
 */
 
 // keycodes
@@ -142,15 +89,64 @@ enum TypeOfTyped
     TypedMistake = 31    // If user did a mistake
 };
 
-void run_test(struct Text text)
+struct TypedChar
+{
+    int type;
+    char ch;
+};
+
+struct Text
+{
+    struct TypedChar *str;
+    size_t length;
+    size_t cappacity;
+};
+
+struct Text text_new(char *str)
+{
+    struct Text text;
+
+    text.length = strlen(str);
+    text.cappacity = text.length;
+    for (; text.cappacity % 8 != 0; text.cappacity++);
+    text.str = calloc(text.cappacity, sizeof(struct TypedChar));
+    if (!text.str)
+    {
+        fprintf(stderr, "Allocation error");
+        return text;
+    }
+
+    int i;
+    for (i = 0; str[i] != '\0'; i++)
+    {
+        text.str[i].ch = str[i];
+    }
+
+    return text;
+}
+
+void text_free(struct Text *text)
+{
+    free(text->str);
+    text->str = NULL;
+}
+
+void text_print(struct Text text)
+{
+    for (size_t i = 0; i < text.length; i++)
+    {
+        printf(ESC_CODE "%im%c" CANCEL_CODE, text.str[i].type, text.str[i].ch);
+    }
+}
+
+/* 
+    run_test
+*/
+
+void run_test(struct Text *text)
 {
     // Results
-    int *corn = calloc(text.length, sizeof(int)); // correct or not
-#ifdef DEBUG
-    malloced += text.length * sizeof(int);
-#endif // DEBUG
-    int correct    = 0;
-    // corrected mistakes
+    int correct     = 0;
     int corrections = 0;
     int mistakes    = 0;
     
@@ -180,105 +176,100 @@ void run_test(struct Text text)
     set_terminal_mode(&orig_termios);
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    struct timespec start, end;
-    if (clock_gettime(CLOCK_MONOTONIC, &start) == -1)
-    {
-        perror("clock_gettime");
-        return;
-    }
+    timer_start();
 
     while (1)
     {
         printf(CLR_CODE);
         printf(BOLD UNDERSCORE "Type." CANCEL_CODE "\n");
-        for (int i = 0; i < text.length; i++)
-        {
-            printf(ESC_CODE "%im%c" CANCEL_CODE, corn[i], text.str[i]);
-        }
+        text_print(*text);
         printf(ESC_CODE "%i;%iH", line, column);
 
         // get typed char
-        if (read(STDIN_FILENO, &c, 1) == 1)
+        if (read(STDIN_FILENO, &c, 1) != 1)
+            continue;
+
+        // To end test
+        if (c == ESC)
         {
-            if (c == ESC)
-            {
-                break;
-            }
-            else if (c == DEL && ind > 0)
-            {
-                ind--;
+            printf(CLR_CODE);
+            break;
+        }
+        // Delete
+        else if (c == DEL && ind > 0)
+        {
+            ind--;
 
-                if (column <= 1)
+            if (text->str[ind].type == TypedCorrect && correct != 0)
+            {
+                correct--;
+            }
+            else if (text->str[ind].type == TypedMistake && mistakes != 0)
+            {
+                mistakes--;
+                deletions++;
+            }
+            text->str[ind].type = NotTypedYet;
+
+            // Move carriage
+            if (column <= 1)
+            {
+                column = max_column;
+                line--;
+            }
+            else
+            {
+                column--;
+            }
+        }
+        // Type
+        else if ((c != CR && c != DEL) && ind < text->length)
+        {
+            if (c == text->str[ind].ch)
+            {
+                text->str[ind].type = TypedCorrect;
+                if (deletions > 0)
                 {
-                    column = max_column;
-                    line--;
+                    deletions--;
+                    corrections++;
                 }
                 else
                 {
-                    column--;
+                    correct++;
                 }
-
-                if (corn[ind] == TypedCorrect && correct != 0)
-                {
-                    correct--;
-                }
-                else if (corn[ind] == TypedMistake && mistakes != 0)
-                {
-                    mistakes--;
-                    deletions++;
-                }
-                corn[ind] = NotTypedYet;
             }
-            else if (c != CR && c != DEL && ind < text.length)
+            else
             {
-                if (c == text.str[ind])
-                {
-                    corn[ind] = TypedCorrect;
-                    if (deletions > 0)
-                    {
-                        deletions--;
-                        corrections++;
-                    }
-                    else
-                    {
-                        correct++;
-                    }
-                }
-                else
-                {
-                    corn[ind] = TypedMistake;
-                    mistakes++;
-                }
-
-                ind++;
-                if (column >= max_column)
-                {
-                    line++;
-                    column = 1;
-                }
-                else
-                    column++;
+                text->str[ind].type = TypedMistake;
+                mistakes++;
             }
-            // if user reached the end of sentence
-            else if ((c == CR || c == SPACE) && ind == text.length)
+
+            ind++;
+
+            // Move carriage
+            if (column >= max_column)
             {
-                printf("\n" BOLD UNDERSCORE "Results:" CANCEL_CODE "\n" GREEN "%i correct" CANCEL_CODE ", " YELLOW "%i corrections" CANCEL_CODE
-                    ", " RED "%i mistakes" CANCEL_CODE "\n", correct, corrections, mistakes);
-
-                if (clock_gettime(CLOCK_MONOTONIC, &end) == -1)
-                {
-                    perror("clock_gettime");
-                    return;
-                }
-                double timePassed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9;
-                printf("Time passed: " GREY "%.3f secs" CANCEL_CODE "\nCPM(Chars per min): " GREY "%i cpm" CANCEL_CODE "\n", timePassed, (int)(text.length / (timePassed / 60)));
-
-                break;
+                line++;
+                column = 1;
             }
+            else
+            {
+                column++;
+            }
+        }
+        // if user reached the end of sentence
+        else if ((c == CR || c == SPACE) && ind == text->length)
+        {
+            printf("\n" BOLD UNDERSCORE "Results:" CANCEL_CODE "\n" GREEN "%i correct" CANCEL_CODE ", " YELLOW "%i corrections" CANCEL_CODE
+                ", " RED "%i mistakes" CANCEL_CODE "\n", correct, corrections, mistakes);
+
+            double timePassed = timer_stop();
+            printf("Time passed: " GREY "%.3f secs" CANCEL_CODE "\nCPM(Chars per min): " GREY "%i cpm" CANCEL_CODE "\n", timePassed, (int)(text->length / (timePassed / 60)));
+
+            break;
         }
     }
     
-    free(corn);
     reset_terminal_mode(&orig_termios);
 }
 
@@ -293,9 +284,6 @@ int py_find_quotes(char *currDir)
 
     args[0] = malloc((strlen("python3") + 1) * sizeof(char));
     args[1] = malloc((strlen(currDir) + strlen("find_quotes.py") + 1) * sizeof(char));
-#ifdef DEBUG
-    malloced += ((strlen("python3") + 1) * sizeof(char)) + ((strlen(currDir) + strlen("find_quotes.py") + 1) * sizeof(char));
-#endif // DEBUG
     if (!args[0] || !args[1])
     {
         fprintf(stderr, "Allocation error\n");
@@ -365,10 +353,6 @@ char *path(char *binPath, char *_Nullable fileName)
     else
         path = calloc(strlen(binPath) + 1, sizeof(char));
 
-#ifdef DEBUG
-    malloced += (strlen(binPath) + 1) * sizeof(char);
-#endif // DEBUG
-
     if (!path)
     {
         fprintf(stderr, "Allocation error\n");
@@ -410,17 +394,11 @@ char **get_quotes(char *binPath, int *_Nullable a_quotesInTotal)
         *a_quotesInTotal = quotesInTotal;
 
     char **quotesf = calloc(quotesInTotal, sizeof(char *));
-#ifdef DEBUG
-    malloced += quotesInTotal * sizeof(char *);
-#endif // DEBUG
     quotesf[quotesInTotal - 1] = NULL;
     size_t quoteCapp;
     for (int i = 0; i < quotesInTotal - 1; i++)
     {
         getdelim(&quotesf[i], &quoteCapp, '\0', f);
-#ifdef DEBUG
-        malloced += quoteCapp * sizeof(char);
-#endif // DEBUG
     }
     fclose(f);
 
@@ -438,24 +416,25 @@ void quotes_free(char **quotes)
 
 int main(int argc, char **argv)
 {
-    int quotesInTotal;
-    char **quotes = get_quotes(argv[0], &quotesInTotal);
-    if (!quotes)
+    char again = 'y';
+    while (again != 'n')
     {
-        return 1;
+        int quotesInTotal;
+        char **quotes = get_quotes(argv[0], &quotesInTotal);
+    
+        // pick a random quote
+        srand(time(NULL));
+        int random_quote = rand() % (quotesInTotal - 1);
+        struct Text text = text_new(quotes[random_quote]);
+    
+        run_test(&text);
+    
+        text_free(&text);
+        quotes_free(quotes);
+
+        printf("Again?(y or n) ");
+        scanf("%c", &again);
     }
 
-    // pick a random quote
-    srand(time(NULL));
-    int random_quote = rand() % (quotesInTotal - 2);
-    struct Text text = text_create_ncp(quotes[random_quote]);
-    run_test(text);
-
-#ifdef DEBUG
-    printf("Malloced: %lu", malloced);
-#endif // DEBUG
-    
-    // cleaning
-    quotes_free(quotes);
     return 0;
 }
